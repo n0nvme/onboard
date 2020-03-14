@@ -41,7 +41,6 @@ from Onboard.SpellChecker      import SpellChecker
 from Onboard.LanguageSupport   import LanguageDB
 from Onboard.Layout            import LayoutPanel
 from Onboard.AtspiStateTracker import AtspiStateTracker
-from Onboard.WPEngine          import WPLocalEngine, ModelCache
 from Onboard.utils             import Rect, unicode_str, escape_markup
 from Onboard.Timer             import CallOnce, Timer, TimerOnce
 from Onboard.KeyGtk            import FullSizeKey, WordKey
