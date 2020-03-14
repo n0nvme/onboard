@@ -95,7 +95,6 @@ class LayoutView:
             self.invalidate_shadows()
         self.invalidate_font_sizes()
         # self.invalidate_label_extents()
-        self.keyboard.invalidate_for_resize()
 
     def invalidate_font_sizes(self):
         """

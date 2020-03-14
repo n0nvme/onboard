@@ -37,7 +37,6 @@ import Onboard.pypredict as pypredict
 from Onboard                   import KeyCommon
 from Onboard.TextContext       import AtspiTextContext, InputLine
 from Onboard.TextChanges       import TextChanges, TextSpan
-from Onboard.SpellChecker      import SpellChecker
 from Onboard.LanguageSupport   import LanguageDB
 from Onboard.Layout            import LayoutPanel
 from Onboard.AtspiStateTracker import AtspiStateTracker
@@ -60,7 +59,6 @@ class WordSuggestions:
         self.text_context = self.atspi_text_context  # initialize for doctests
         self._learn_strategy = LearnStrategyLRU(self)
         self._languagedb = LanguageDB(self)
-        self._spell_checker = SpellChecker(self._languagedb)
         self._punctuator = PunctuatorImmediateSeparators(self)
         self._pending_separator_popup = PendingSeparatorPopup()
         self._pending_separator_popup_timer = Timer()
@@ -112,29 +110,6 @@ class WordSuggestions:
                     item.visible = enable
                 elif item.group == 'nowordlist':
                     item.visible = not enable
-
-        self._update_wp_engine()
-        self._update_spell_checker()
-        self._update_punctuator()
-
-    def _update_wp_engine(self):
-        enable = config.is_typing_assistance_enabled()
-
-        if enable:
-            # only enable if there is a wordlist in the layout
-            if self._get_wordlist_bars():
-                self._wpengine = WPLocalEngine()
-                self.apply_prediction_profile()
-        else:
-            if self._wpengine:
-                self._wpengine.cleanup()
-            self._wpengine = None
-
-        # Init text context tracking.
-        # Keep track in and write to both contexts in parallel,
-        # but read only from the active one.
-        self.text_context = self.atspi_text_context
-        self.text_context.enable(enable)  # register AT-SPI listerners
 
     def on_word_suggestions_enabled(self, enabled):
         """ Config callback for word_suggestions.enabled changes. """
@@ -271,12 +246,6 @@ class WordSuggestions:
         if self._separator_before_key_press != separator_after:
             self.invalidate_context_ui()
 
-        if not key.is_correction_key():
-            self.expand_corrections(False)
-
-        if not key.is_button():
-            self._goto_first_prediction()
-
     def send_key_up(self, key, button, event_type):
         key_type = key.type
         if key_type == KeyCommon.CORRECTION_TYPE:
@@ -330,48 +299,10 @@ class WordSuggestions:
             self._punctuator.insert_separator_at_distance(separator_span)
             self.text_context.set_pending_separator(None)
 
-    def _update_spell_checker(self):
-        # select the backend
-        backend = config.typing_assistance.spell_check_backend \
-            if config.is_spell_checker_enabled() else None
-        self._spell_checker.set_backend(backend)
-
-        if backend is not None:
-            # chose dicts
-            lang_id = self.get_lang_id()
-            dict_ids = [lang_id] if lang_id else []
-            self._spell_checker.set_dict_ids(dict_ids)
-
-        self.invalidate_context_ui()
-
-    def invalidate_for_resize(self):
-        self._goto_first_prediction()
-
     def update_suggestions_ui(self):
-        self._update_correction_choices()
-        self._update_prediction_choices()
         self._update_pending_separator_popup()
         keys_to_redraw = self.update_inputline()
-        keys_to_redraw.extend(self.update_wordlists())
         return keys_to_redraw
-
-    def update_wordlists(self):
-        keys_to_redraw = []
-        items = self._get_wordlist_bars()
-        for item in items:
-            keys = item.create_keys(self._correction_choices,
-                                    self._prediction_choices)
-            keys_to_redraw.extend(keys)
-
-        # layout changed, but doesn't know it yet
-        # -> invalidate all item caches
-        if self.layout:
-            self.layout.invalidate_caches()
-
-        for key in keys_to_redraw:
-            key.configure_label(0)
-
-        return items + keys_to_redraw
 
     def update_language_ui(self):
         return []
@@ -381,90 +312,7 @@ class WordSuggestions:
             self._punctuator = PunctuatorDelayedSeparators(self)
         else:
             self._punctuator = PunctuatorImmediateSeparators(self)
-
-    def _has_suggestions(self):
-        return bool(self._correction_choices or self._prediction_choices)
-
-    def expand_corrections(self, expand):
-        # collapse all expanded corrections
-        for item in self.find_items_from_classes((WordListPanel)):
-            if item.are_corrections_expanded():
-                item.expand_corrections(expand)
-                self.redraw([item])
-
-    def _goto_first_prediction(self):
-        for item in self.find_items_from_classes((WordListPanel)):
-            item.goto_first_prediction()
-
-    def get_prediction_choice(self, wordlist, choice_index):
-        """
-        wordlist:     WordListPanel that choice_index belongs to
-        choice_index: index of a visible prediction key
-        """
-        if wordlist:
-            index = choice_index + wordlist.get_first_prediction_index()
-            if index >= 0 and index < len(self._prediction_choices):
-                return self._prediction_choices[index]
-        return ""
-
-    def get_prediction_choice_and_history(self, wordlist, choice_index):
-        word = self.get_prediction_choice(wordlist, choice_index)
-        context = self.text_context.get_bot_context()
-        tokens, spans = self._wpengine.tokenize_context(context)
-        history = tokens[:-1]
-        return word, history
-
-    def remove_prediction_context(self, context):
-        if self._wpengine:
-            self._wpengine.remove_context(context)
-
-    def _insert_correction_choice(self, key, choice_index):
-        """ spelling correction clicked """
-        span = self._correction_span  # span to correct
-        with self.suppress_modifiers():
-            self._delete_selected_text()
-            self.replace_text(span.begin(), span.end(),
-                              self.text_context.get_span_at_caret().begin(),
-                              self._correction_choices[choice_index])
-
-    def _insert_prediction_choice(self, key, choice_index, allow_separator):
-        """ prediction choice clicked """
-        choice = self.get_prediction_choice(key.get_parent(), choice_index)
-        deletion, insertion = \
-            self._get_prediction_choice_changes(choice)
-
-        # Get the auto separator
-        separator = ""
-        simulated_result = None
-        if allow_separator:
-            # Simulate the change and determine the final text
-            # before the caret.
-            caret_span = self.text_context.get_span_at_caret()
-            simulated_result = \
-                self._simulate_insertion(caret_span, deletion, insertion)
-
-            domain = self.get_text_domain()
-            separator = \
-                domain.get_auto_separator(simulated_result.get_text())
-
-        # Type remainder/replace word and possibly add separator.
-        with self.suppress_modifiers():
-            if config.wp.delayed_word_separators_enabled:
-                self._replace_text_at_caret(deletion, insertion)
-            else:
-                # Insert separator now, so we suppress_modifiers only once.
-                self._replace_text_at_caret(deletion, insertion, separator)
-                if separator:
-                    self.set_last_typed_was_separator(True)
-
-        # Separator becomes the new pending separator
-        separator_span = TextSpan(simulated_result.begin(),
-                                  len(separator), separator,
-                                  simulated_result.begin()) \
-            if separator else None
-
-        self._punctuator.set_separator(separator_span)
-
+            
     def _replace_text_at_caret(self, deletion, insertion, auto_separator=""):
         """
         Insert a word/word-remainder and add a separator string as needed.
@@ -571,225 +419,6 @@ class WordSuggestions:
         text_pos = caret_span.text_begin()
         return TextSpan(text_pos + len(context), 0, context, text_pos)
 
-    def _update_correction_choices(self):
-        self._correction_choices = []
-        self._correction_span = None
-
-        if self._spell_checker and \
-           config.are_spelling_suggestions_enabled():
-            caret_span = self.text_context.get_span_at_caret()
-            if caret_span:
-                word_span = self._get_word_to_spell_check(caret_span,
-                                                          self.is_typing())
-                if word_span:
-                    (self._correction_choices,
-                     self._correction_span,
-                     auto_capitalization) = \
-                        self._find_correction_choices(word_span, False)
-
-    def _find_correction_choices(self, word_span, auto_capitalize):
-        """
-        Find spelling suggestions for the word at or before the caret.
-
-        Doctests:
-        >>> ws = WordSuggestions()
-        >>> f = ws._find_correction_choices
-        >>> ws._spell_checker.set_backend(0)
-        >>> ws._spell_checker.set_dict_ids(["en_US"])
-        True
-
-        # auto-capitalization
-        >>> f(TextSpan(0, 7, "Jupiter"), True)
-        ([], None, None)
-        >>> f(TextSpan(0, 7, "jupiter"), True)             # doctest: +ELLIPSIS
-        (['Jupiter', ...], TextSpan(0, 7, 'jupiter', 0, None), 'Jupiter')
-        >>> f(TextSpan(0, 7, "jupiter-orbit"), True)       # doctest: +ELLIPSIS
-        (['Jupiter', ...], TextSpan(0, 7, 'jupiter', 0, None), 'Jupiter')
-        >>> f(TextSpan(0, 3, "usa"), True)                 # doctest: +ELLIPSIS
-        (['USA', ...], TextSpan(0, 3, 'usa', 0, None), 'USA')
-        >>> f(TextSpan(0, 3, "Usa"), True)                 # doctest: +ELLIPSIS
-        (['USA', ...], TextSpan(0, 3, 'Usa', 0, None), 'USA')
-        >>> f(TextSpan(0, 13, "ubuntu-system"), True)      # doctest: +ELLIPSIS
-        ([...], TextSpan(0, 13, 'ubuntu-system', 0, None), 'Ubuntu-system')
-        """
-        correction_choices = []
-        correction_span = None
-        auto_capitalization = None
-
-        text_begin = word_span.text_begin()
-        word = word_span.get_span_text()
-        caret = self.text_context.get_caret()
-        offset = caret - text_begin  # caret offset into the word
-
-        span, choices = \
-            self._spell_checker.find_corrections(word, offset)
-        if choices:
-            correction_choices = choices
-            correction_span = TextSpan(span[0] + text_begin,
-                                       span[1] - span[0],
-                                       span[2],
-                                       span[0] + text_begin)
-
-            # See if there is a valid upper caps variant for
-            # auto-capitalization.
-            if auto_capitalize:
-                choice = correction_choices[0]
-                if word.upper() == choice.upper():
-                    auto_capitalization = choice
-
-                elif word and word[0].islower():
-                    word_caps = word.capitalize()
-                    span, choices = \
-                        self._spell_checker.find_corrections(word_caps, offset)
-                    if not choices:
-                        auto_capitalization = word_caps
-                        correction_span = word_span
-
-        return correction_choices, correction_span, auto_capitalization
-
-    def _update_prediction_choices(self):
-        """ word prediction: find choices, only once per key press """
-        self._prediction_choices = []
-        text_context = self.text_context
-
-        if self._wpengine:
-
-            context = text_context.get_context()
-            if context:  # don't load models on startup
-                bot_marker = text_context.get_text_begin_marker()
-                bot_context = text_context.get_pending_bot_context()
-
-                tokens, spans = self._wpengine.tokenize_context(bot_context)
-
-                (case_insensitive_mode, ignore_non_caps,
-                 capitalize, drop_capitalized) = \
-                    self._get_prediction_options(tokens,
-                                                 bool(self.mods[1]),
-                                                 bot_marker)
-
-                _choices = self._wpengine.predict(
-                    bot_context,
-                    config.wp.max_word_choices * 8,
-                    case_insensitive=case_insensitive_mode == 1,
-                    case_insensitive_smart=case_insensitive_mode == 2,
-                    accent_insensitive_smart=config.wp.accent_insensitive,
-                    ignore_non_capitalized=ignore_non_caps)
-
-                choices = []
-                for choice in _choices:
-                    # Filter out begin of text markers that sneak in as
-                    # high frequency unigrams.
-                    if choice.startswith("<bot:"):
-                        continue
-
-                    # Drop upper caps spelling in favor of a lower caps one.
-                    # Auto-capitalization may elect to upper caps on insertion.
-                    if drop_capitalized:
-                        choice_lower = choice.lower()
-                        if choice != choice_lower and \
-                           self._wpengine.word_exists(choice_lower):
-                            continue
-
-                    choices.append(choice)
-
-                # Make all words start upper case
-                if capitalize:
-                    choices = self._capitalize_choices(choices)
-            else:
-                choices = []
-
-            self._prediction_choices = choices
-
-            # update word information for the input line display
-            # self.word_infos = \
-            #    self.get_word_infos(self.text_context.get_line())
-
-    @staticmethod
-    def _get_prediction_options(tokens, shift, bot_marker=None):
-        """
-        Determine prediction options.
-
-        Doctests:
-        >>> get_options = WordSuggestions._get_prediction_options
-
-        # mid-sentence, no tokens
-        >>> get_options([], False)
-        (0, False, False, False)
-
-        # mid-sentence, lowercase
-        >>> get_options(["<s>", "Word", "prefix"], False)
-        (2, False, False, False)
-
-        # mid-sentence, capitalized
-        >>> get_options(["<s>", "Word", "Prefix"], False)
-        (0, True, False, False)
-
-        # mid-sentence, capitals in word (Irish, e.g. bPoblacht)
-        # Don't drop caps words, smart case-insensitive search already dropped
-        # the lower caps variant.
-        >>> get_options(["<s>", "Word", "pRefix"], False)
-        (2, False, False, False)
-
-        # mid-sentence, empty prefix
-        >>> get_options(["<s>", "Word", ""], False)
-        (2, False, False, False)
-
-        # mid-sentence, empty prefix, with shift
-        >>> get_options(["<s>", "Word", ""], True)
-        (0, True, False, False)
-
-        # sentence begin, lowercase
-        >>> get_options(["<s>", "prefix"], False)
-        (2, False, False, False)
-
-        # sentence begin, capitalized
-        >>> get_options(["<s>", "Prefix"], False)
-        (1, False, True, False)
-
-        # sentence begin, empty prefix
-        >>> get_options(["<s>", ""], False)
-        (2, False, False, False)
-
-        # sentence begin, empty prefix, with shift
-        >>> get_options(["<s>", ""], True)
-        (1, False, True, False)
-
-        # sentence begin at begin of text.
-        >>> get_options(["<bot:txt>", "Prefix"], True, "<bot:txt>")
-        (1, False, True, False)
-        """
-        if tokens:
-            prefix = tokens[-1]
-            sentence_begin = (len(tokens) >= 2 and
-                              (tokens[-2] == "<s>" or
-                               bool(bot_marker) and tokens[-2] == bot_marker))
-            capitalized = bool(prefix) and prefix[0].isupper()
-            empty_prefix = not bool(prefix)
-
-            ignore_non_caps  = (not sentence_begin and
-                                (capitalized or empty_prefix and shift))
-
-            capitalize       = sentence_begin and (capitalized or shift)
-
-            case_insensitive = sentence_begin or not (capitalized or shift)
-            if not case_insensitive:
-                case_insensitive_mode = 0      # case sensitive
-            else:
-                if capitalize:
-                    case_insensitive_mode = 1  # simple
-                else:
-                    case_insensitive_mode = 2  # smart
-
-        else:
-            case_insensitive_mode = 0
-            ignore_non_caps  = False
-            capitalize = False
-
-        drop_capitalized = False
-
-        return (case_insensitive_mode, ignore_non_caps,
-                capitalize, drop_capitalized)
-
     def get_word_infos(self, text):
         wis = []
         if text.rstrip():  # don't load models on startup
@@ -832,91 +461,6 @@ class WordSuggestions:
                     results.append(choice)
                     seen.add(choice)
         return results
-
-    def _get_prediction_choice_changes(self, choice):
-        """
-        Determines the text changes necessary when inserting
-        the prediction choice at choice_index.
-        """
-        deletion = ""
-        insertion = ""
-        if self._wpengine:
-            context = self.text_context.get_context()
-            word_prefix = self._wpengine.get_last_context_fragment(context)
-            remainder = choice[len(word_prefix):]
-
-            # no case change?
-            if word_prefix + remainder == choice:
-                insertion = remainder
-
-                # Force update of word suggestions, even if there is
-                # no change necessary. Else, with lazy word separators,
-                # predictions won't take the pending separator into account.
-                if not deletion and \
-                   not insertion:
-                    deletion = choice[-1]
-                    insertion = deletion
-            else:
-                deletion = word_prefix
-                insertion = choice
-
-        return deletion, insertion
-
-    def _get_word_to_spell_check(self, caret_span, is_typing):
-        """
-        Get the word to be spell-checked.
-
-        Doctests:
-        >>> from Onboard.TextDomain import DomainGenericText
-        >>> wp = WordSuggestions()
-        >>> wp._wpengine = WPLocalEngine()
-        >>> d = DomainGenericText()
-        >>> wp.get_text_domain = lambda : d
-
-        # not typing and caret at word begin: return word at caret
-        >>> span = TextSpan(9, 0, "binomial proportion")
-        >>> print(wp._get_word_to_spell_check(span, False))
-        TextSpan(9, 10, 'proportion', 9, None)
-
-        # not typing and caret before word end: return word at caret
-        >>> span = TextSpan(7, 0, "binomial proportion")
-        >>> print(wp._get_word_to_spell_check(span, False))
-        TextSpan(0, 8, 'binomial', 0, None)
-
-        # not typing and caret at word end: return word before caret
-        >>> span = TextSpan(8, 0, "binomial proportion")
-        >>> print(wp._get_word_to_spell_check(span, False))
-        TextSpan(0, 8, 'binomial', 0, None)
-
-        # not typing and caret in URLs or filenames: no spelling suggestions
-        >>> span = TextSpan(57, 0,
-        ...  "abc http://user:pass@www.do-mai_n.nl/path/name.ext/?p=1#anchor ")
-        >>> print(wp._get_word_to_spell_check(span, False))
-        None
-        >>> span = TextSpan(2, 0, "http://www.domain.org")
-        >>> print(wp._get_word_to_spell_check(span, False))
-        None
-
-        # typing and caret at word end: suppress spelling suggestions
-        >>> span = TextSpan(8, 0, "binomial proportion")
-        >>> print(wp._get_word_to_spell_check(span, True))
-        None
-        """
-        section_span = self._get_section_before_span(caret_span)
-        if section_span and \
-           self._can_spell_check(section_span):
-            word_span = self._get_word_before_span(caret_span)
-
-            # Don't pop up spelling corrections if we're
-            # currently typing the word.
-            caret = caret_span.begin()
-            if is_typing and \
-               word_span and \
-               word_span.end() == caret:
-                word_span = None
-
-            return word_span
-        return None
 
     def _delete_selected_text(self):
         """
@@ -1043,11 +587,6 @@ class WordSuggestions:
         self.atspi_text_context.clear_changes()
         self.atspi_text_context.reset()
         self.input_line.reset()
-
-        # Clear the spell checker cache, new words may have
-        # been added from somewhere.
-        if self._spell_checker:
-            self._spell_checker.invalidate_query_cache()
 
         self.set_last_typed_was_separator(False)
 
