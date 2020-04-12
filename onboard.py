@@ -1,7 +1,9 @@
-#!/usr/bin/python3
-# -*- coding: utf-8 -*-
 
-# Copyright © 2013 marmuta <marmvta@gmail.com>
+# -*- coding: UTF-8 -*-
+
+# Copyright © 2007 Martin Böhme <martin.bohm@kubuntu.org>
+# Copyright © 2009 Chris Jones <tortoise@tortuga>
+# Copyright © 2012 marmuta <marmvta@gmail.com>
 #
 # This file is part of Onboard.
 #
@@ -18,26 +20,17 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+from __future__ import division, print_function, unicode_literals
+
+__copyright__ = "Copyright © 2009 Chris Jones"
+__author__    = "Chris Jones <chrisejones@gmail.com>"
+
 import sys
-import time
-import pypredict
 
-def main():
+# Replace the default exception handler with one which handles chained
+# exceptions.
+from Onboard.Exceptions import chain_handler
+sys.excepthook = chain_handler
 
-    args = sys.argv[1:]
-    for fn in args:
-        model = pypredict.DynamicModel()
-
-        t = time.time()
-        model.load(fn)
-        t = time.time() - t
-
-        print("{:30} {:35} {:6.2f}MB {:5.2f}s" \
-              .format(fn,
-                      " ".join(["{}: {:7}".format(i+1, c) for i,c in enumerate(model.get_counts()[0])]),
-                      sum(model.memory_size())/2**20,
-                      t))
-
-if __name__ == '__main__':
-    main()
-
+from Onboard.OnboardGtk import OnboardGtk as Onboard
+ob = Onboard()
