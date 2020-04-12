@@ -1010,12 +1010,6 @@ class Config(ConfigObject):
 
         return paths
 
-    def get_user_model_dir(self):
-        return os.path.join(self.user_dir, "models")
-
-    def get_system_model_dir(self):
-        return os.path.join(self.install_dir, "models")
-
     def enable_hover_click(self, enable):
         hide = self.universal_access.hide_click_type_window
         if enable:

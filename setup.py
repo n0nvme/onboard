@@ -59,8 +59,7 @@ assert current_ver >= required_ver , 'needs DistUtilsExtra.auto >= 2.12'
 project_root = dirname(abspath(__file__))
 build_root = join(project_root, 'build', 'lib*{}.*' \
                   .format(sys.version_info.major))
-libs_to_symlink = [['Onboard', 'osk*.so'],
-                   ['Onboard/pypredict', 'lm*.so']]
+libs_to_symlink = [['Onboard', 'osk*.so']]
 setup_command = sys.argv[1] if len(sys.argv) >= 2 else ""
 
 

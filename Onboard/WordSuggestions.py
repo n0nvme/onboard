@@ -125,7 +125,6 @@ class WordSuggestions:
             scratch_models = ["lm:mem"]
 
             persistent_models = system_models + user_models
-            # models = system_models + user_models + scratch_models
             auto_learn_models = user_models
 
             _logger.info("selecting language models: "
